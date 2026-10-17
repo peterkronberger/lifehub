@@ -1,0 +1,26 @@
+# robots.txt - Peter Kronberger
+# KI-Crawler und KI-Agenten: kein Zugriff (Bot-Namen geprueft am 2026-10-17)
+# Hinweis: Nutzer-ausgeloeste Abrufer (ChatGPT-User, Perplexity-User,
+# meta-externalfetcher) beachten robots.txt laut Betreiber moeglicherweise nicht.
+# Bytespider: keine offizielle Dokumentation des Betreibers gefunden.
+
+User-agent: GPTBot
+User-agent: OAI-SearchBot
+User-agent: ChatGPT-User
+User-agent: ClaudeBot
+User-agent: Claude-SearchBot
+User-agent: Claude-User
+User-agent: Google-Extended
+User-agent: Applebot-Extended
+User-agent: CCBot
+User-agent: PerplexityBot
+User-agent: Perplexity-User
+User-agent: meta-externalagent
+User-agent: meta-externalfetcher
+User-agent: meta-webindexer
+User-agent: Bytespider
+Disallow: /
+
+# Alle anderen (z. B. Suchmaschinen, Link-Vorschauen)
+User-agent: *
+Allow: /
