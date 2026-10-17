@@ -1,0 +1,147 @@
+# ARCHITECT (Opus): Aufgabe analysieren und in konkrete Implement-Issues zerlegen. Schreibt keinen Code.
+# Start: Label "claude:auto-architect".
+# Die neuen Issues bekommen "claude:auto-implement" (sofort) oder "claude:queued" (wartet auf Depends on #…).
+# Zweiter Job "unlock": Wird ein Issue geschlossen, startet er wartende Issues, deren Abhängigkeiten erledigt sind.
+name: Claude – Architect (Opus)
+
+on:
+  issues:
+    types: [labeled, closed]
+  workflow_dispatch: # manuell: wartende Issues prüfen
+
+jobs:
+  architect:
+    if: github.event.action == 'labeled' && github.event.label.name == 'claude:auto-architect'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: claude-architect-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      actions: write # zum Starten von claude-implement.yml
+      id-token: write
+    env:
+      ISSUE: ${{ github.event.issue.number }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Status → in Arbeit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh issue edit "$ISSUE" --add-label "claude:in-progress" || true
+          gh issue edit "$ISSUE" --remove-label "claude:failed,needs-human" || true
+
+      - name: Claude entwirft und legt Issues an
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            ISSUE NUMBER: ${{ env.ISSUE }}
+
+            Du bist Software-Architekt. Issue #${{ env.ISSUE }} beschreibt eine größere Aufgabe.
+            Zerlege sie in Implement-Issues, die ein anderes Modell OHNE Rückfragen umsetzen kann.
+            Du schreibst KEINEN Code und änderst keine Dateien im Repo.
+
+            1. Lies das Issue: `gh issue view ${{ env.ISSUE }} --comments`
+            2. Lies CLAUDE.md und untersuche den relevanten Code gründlich (Glob, Grep, Read).
+            3. Ist die Aufgabe zu unklar für einen Entwurf: poste nummerierte Rückfragen mit
+               `gh issue comment`, lege KEINE Issues an und gib status=needs_human zurück.
+            4. Sonst lege die Issues in Abhängigkeitsreihenfolge an (damit du echte Nummern
+               referenzieren kannst). Jedes Issue = genau ein Pull Request, klein und einzeln testbar.
+               Body zuerst mit Write in eine Datei schreiben, dann:
+               `gh issue create --title "<Titel>" --body-file <datei>`
+               (OHNE --label – Labels setzt der Workflow.)
+               Jeder Body enthält diese Abschnitte:
+               - **Teil von #${{ env.ISSUE }}**
+               - **Ziel**: 1–3 Sätze
+               - **Kontext**: relevante Architekturentscheidungen aus deinem Entwurf
+               - **Betroffene Dateien**: konkrete Pfade (neu/ändern) und was dort passiert
+               - **Schnittstellen**: Funktions-/Klassen-Signaturen, Datenstrukturen, API-Endpunkte
+               - **Umsetzungsschritte**: nummeriert und konkret
+               - **Akzeptanzkriterien**: Checkboxen, prüfbar
+               - **Tests**: welche Tests geschrieben/angepasst werden
+               - **Nicht Teil dieses Issues**: klare Grenzen
+               - für jede Abhängigkeit eine eigene Zeile exakt: `Depends on #<nummer>`
+               Braucht eine Aufgabe zwingend einen Menschen (Secrets, Zugänge, Entscheidung,
+               riskante Migration), lege sie trotzdem an, mit Abschnitt „Was ein Mensch tun muss“,
+               und gib sie mit class=human zurück.
+            5. Poste in #${{ env.ISSUE }} einen Kommentar „## 🏗️ Architektur“ mit dem Entwurf in
+               Kurzform und einer Liste der angelegten Issues (Nummer, Titel, Abhängigkeiten).
+            6. Gib status=done und in `created` alle Issues mit number und class zurück:
+               implement = sofort umsetzbar, queued = hat offene Abhängigkeiten, human = Mensch nötig.
+          claude_args: |
+            --model opus
+            --max-turns 60
+            --allowedTools "Read,Write,Glob,Grep,Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue comment:*)"
+            --json-schema '{"type":"object","properties":{"status":{"type":"string","enum":["done","needs_human"]},"created":{"type":"array","items":{"type":"object","properties":{"number":{"type":"integer"},"class":{"type":"string","enum":["implement","queued","human"]}},"required":["number","class"]}},"reason":{"type":"string"}},"required":["status"]}'
+
+      - name: Labels setzen und Umsetzung starten
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULT: ${{ steps.claude.outputs.structured_output }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$RESULT" ] && RESULT='{}'
+          STATUS=$(jq -r '.status // "failed"' <<<"$RESULT")
+          gh issue edit "$ISSUE" --remove-label "claude:in-progress,claude:auto-architect" || true
+
+          if [ "$STATUS" = "needs_human" ]; then
+            gh issue edit "$ISSUE" --add-label "needs-human"; exit 0
+          fi
+          if [ "$STATUS" != "done" ] || [ "$(jq '.created // [] | length' <<<"$RESULT")" -eq 0 ]; then
+            gh issue edit "$ISSUE" --add-label "needs-human,claude:failed"
+            gh issue comment "$ISSUE" --body "⚠️ Architektur nicht abgeschlossen. Details: ${RUN_URL} – Neustart: Label \`claude:auto-architect\` erneut setzen."
+            exit 0
+          fi
+
+          gh issue edit "$ISSUE" --add-label "claude:architected"
+          jq -c '.created[]' <<<"$RESULT" | while read -r item; do
+            n=$(jq -r .number <<<"$item"); c=$(jq -r .class <<<"$item")
+            case "$c" in
+              implement)
+                gh issue edit "$n" --add-label "claude:auto-implement"  # Anzeige; löst selbst nichts aus
+                gh workflow run claude-implement.yml -f issue_number="$n" ;;
+              queued) gh issue edit "$n" --add-label "claude:queued" ;;
+              human)  gh issue edit "$n" --add-label "needs-human" ;;
+            esac
+          done
+
+  unlock:
+    if: github.event.action == 'closed' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: claude-unlock
+      cancel-in-progress: false
+    permissions:
+      issues: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Wartende Issues freigeben
+        run: |
+          for n in $(gh issue list --label "claude:queued" --state open --limit 200 --json number --jq '.[].number'); do
+            body=$(gh issue view "$n" --json body --jq .body)
+            deps=$(grep -oiE 'depends on #[0-9]+' <<<"$body" | grep -oE '[0-9]+' || true)
+            blocked=0
+            for d in $deps; do
+              state=$(gh issue view "$d" --json state --jq .state 2>/dev/null || echo OPEN)
+              [ "$state" != "CLOSED" ] && blocked=1
+            done
+            if [ "$blocked" -eq 0 ]; then
+              echo "Freigabe #$n"
+              gh issue edit "$n" --remove-label "claude:queued" --add-label "claude:auto-implement"
+              gh workflow run claude-implement.yml -f issue_number="$n"
+            fi
+          done
