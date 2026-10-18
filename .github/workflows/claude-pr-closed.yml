@@ -1,7 +1,8 @@
-# PR-STATUS NACHZIEHEN: Wird ein Pull Request von Claude OHNE Merge geschlossen,
-# bekommt das zugehörige Issue wieder einen sichtbaren Status.
-# (Beim Merge schließt GitHub das Issue über "Closes #…" selbst – dafür ist hier nichts nötig.)
-name: Claude – PR ohne Merge geschlossen
+# PR-STATUS NACHZIEHEN: Wird ein Pull Request von Claude geschlossen (mit oder ohne Merge),
+# wird das Label claude:pr-open am zugehörigen Issue entfernt.
+# Ohne Merge bekommt das Issue zusätzlich needs-human und einen Kommentar mit den nächsten Schritten.
+# (Beim Merge schließt GitHub das Issue über "Closes #…" selbst.)
+name: Claude – PR geschlossen
 
 on:
   pull_request:
@@ -9,9 +10,8 @@ on:
 
 jobs:
   update-issue:
-    # Nur: nicht gemergt + Branch aus diesem Repo + Branch-Name "claude/issue-<Nummer>"
+    # Nur: Branch aus diesem Repo + Branch-Name "claude/issue-<Nummer>"
     if: >
-      github.event.pull_request.merged == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'claude/issue-')
     runs-on: ubuntu-latest
@@ -22,14 +22,15 @@ jobs:
       GH_REPO: ${{ github.repository }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
+      MERGED: ${{ github.event.pull_request.merged }}
     steps:
       # ─────────────────────────────────────────────────────────────────
       # Ablauf:
       #  1. Issue-Nummer aus dem Branch-Namen lesen (claude/issue-42 → 42).
-      #  2. Ist das Issue noch offen?
-      #       ja   → claude:pr-open entfernen, needs-human setzen,
-      #              Kommentar mit Hinweis zum Neustart
-      #       nein → nichts tun (Issue wurde bewusst geschlossen)
+      #  2. Label claude:pr-open am Issue entfernen – immer, egal ob gemergt
+      #     und egal ob das Issue offen oder schon geschlossen ist.
+      #  3. Nur wenn NICHT gemergt und das Issue noch offen ist:
+      #       → needs-human setzen + Kommentar mit Hinweis zum Neustart
       #
       # Hinweis: Der Branch claude/issue-<N> bleibt bestehen. Ein Neustart über
       # das Label claude:auto-implement arbeitet darauf weiter. Soll Claude
@@ -42,11 +43,19 @@ jobs:
             echo "Keine Issue-Nummer im Branch '$HEAD_REF' – nichts zu tun."; exit 0
           fi
           state=$(gh issue view "$ISSUE" --json state --jq .state 2>/dev/null || echo MISSING)
-          if [ "$state" != "OPEN" ]; then
-            echo "Issue #$ISSUE ist $state – nichts zu tun."; exit 0
+          if [ "$state" = "MISSING" ]; then
+            echo "Issue #$ISSUE nicht gefunden – nichts zu tun."; exit 0
           fi
+
+          # 2. PR ist zu → "PR offen" stimmt nicht mehr
           gh issue edit "$ISSUE" --remove-label "claude:pr-open" || true
-          gh issue edit "$ISSUE" --add-label "needs-human" || true
-          gh issue comment "$ISSUE" --body "ℹ️ Pull Request #${PR_NUMBER} wurde ohne Merge geschlossen. Bitte entscheiden, wie es weitergeht:
+
+          # 3. Ohne Merge und Issue noch offen → Mensch muss entscheiden
+          if [ "$MERGED" != "true" ] && [ "$state" = "OPEN" ]; then
+            gh issue edit "$ISSUE" --add-label "needs-human" || true
+            gh issue comment "$ISSUE" --body "ℹ️ Pull Request #${PR_NUMBER} wurde ohne Merge geschlossen. Bitte entscheiden, wie es weitergeht:
           - Neu umsetzen lassen: Anforderungen im Issue ggf. präzisieren, dann Label \`claude:auto-implement\` setzen. Soll Claude komplett neu beginnen, vorher den Branch \`${HEAD_REF}\` löschen.
           - Nicht mehr nötig: Issue schließen."
+          else
+            echo "Issue #$ISSUE: claude:pr-open entfernt (merged=$MERGED, Issue $state)."
+          fi
