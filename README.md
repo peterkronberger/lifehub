@@ -16,4 +16,6 @@ Workflows in `.github/workflows/`:
 - `claude-architect.yml`: Label `claude:auto-architect`
 - `claude-labels.yml`: manuell (`workflow_dispatch`)
 
+Ausführliche Beschreibung inkl. Issue-Lifecycle: [docs/workflow.md](docs/workflow.md)
+
 Doku: <https://code.claude.com/docs/en/github-actions>

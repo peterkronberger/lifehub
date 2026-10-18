@@ -67,6 +67,7 @@ Hinweise:
 
 - `.git/`
 - `.github/`
+- `docs/`
 - `README.md`
 - `CLAUDE.md`
 - `.gitignore`
